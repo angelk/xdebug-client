@@ -9,6 +9,7 @@ use Symfony\Component\Console\Input\InputOption;
 use Symfony\Component\Console\Question\ChoiceQuestion;
 use Symfony\Component\Console\Question\Question;
 use Symfony\Component\Console\Style\SymfonyStyle;
+use Symfony\Component\DomCrawler\Crawler;
 
 /**
  * @author po_taka
@@ -17,6 +18,11 @@ class RunCommand extends Command
 {
     const COMMANT_NUMBER_START = 1;
     private $commandNumber = self::COMMANT_NUMBER_START;
+
+    private $currentFile;
+    private $currentFileLine;
+
+    private $localVars;
 
     /**
      * Configures the current command.
@@ -61,7 +67,7 @@ class RunCommand extends Command
             }
 
             do {
-                $output->writeln("Reading response...");
+                $output->writeln("Reading response...", OutputInterface::VERBOSITY_VERY_VERBOSE);
                 if (false === ($buf = socket_read($msgsock, 2048, PHP_BINARY_READ))) {
                     $symfonyStyle->error("socket_read() failed: reason: " . socket_strerror(socket_last_error($msgsock)));
                     break 2;
@@ -73,7 +79,7 @@ class RunCommand extends Command
                 }
 
                 // @FIXME
-                $response = preg_replace('/.*?(\<\?xml)/s', '$1', $buf);
+                $response = preg_replace('/^.*?(\<\?xml)/s', '$1', $buf);
                 $output->writeln('parsed: ' . $response, OutputInterface::VERBOSITY_VERY_VERBOSE);
 
                 // @parse xml!!! @FIXME
@@ -82,13 +88,20 @@ class RunCommand extends Command
                 $xdebugMessage = $dom->filterXPath('//default:response/xdebug:message');
 
                 if (count($xdebugMessage)) {
-                    var_dump($xdebugMessage->attr('filename'));
-                    var_dump($xdebugMessage->attr('lineno'));
+                    $this->updateCurrentFile($xdebugMessage);
                 }
+
+                // update vars
+                $this->updateVars($output, $msgsock);
+
+
+                $output->writeln("<info>{$this->currentFile}:{$this->currentFileLine}</info>");
+
+
 
                 $questionHelper = $this->getHelper('question');
                 /* @var $questionHelper \Symfony\Component\Console\Helper\QuestionHelper */
-                $question = new Question('Command:', 'step_over');
+                $question = new Question('Command (step_into):', 'step_into');
                 $question->setAutocompleterValues(
                     [
                         'run',
@@ -109,6 +122,43 @@ class RunCommand extends Command
         } while (true);
 
         socket_close($sock);
+    }
+
+    protected function updateVars(OutputInterface $output, $msgsock)
+    {
+        $this->sendCommand($output, $msgsock, "context_get -d 0 -c 0");
+        if (false === ($buf = socket_read($msgsock, 2048, PHP_BINARY_READ))) {
+            throw new Exception('Error reading buffer');
+        }
+
+        $buf = trim($buf);
+        echo "Buf: " . $buf . PHP_EOL;
+        $response = preg_replace('/^.*?(\<\?xml)/s', '$1', $buf);
+        var_dump('vars response');
+        var_dump($response);
+
+        $crawler = new Crawler($response);
+        $localVarsCrawler = $crawler->filterXPath('//default:response/xdebug:property');
+
+        $this->localVars = [];
+
+        foreach ($localVarsCrawler as $localValue) {
+            var_dump($localValue->attr('name'));
+            var_dump($localValue->attr('fullname'));
+            var_dump($localValue->attr('type'));
+            var_dump($localValue->text());
+        }
+    }
+
+    protected function updateCurrentFile(\Symfony\Component\DomCrawler\Crawler $crawler)
+    {
+        if ($crawler->attr('filename')) {
+            $this->currentFile = $crawler->attr('filename');
+        }
+
+        if ($crawler->attr('lineno')) {
+            $this->currentFileLine = $crawler->attr('lineno');
+        }
     }
 
     protected function sendCommand(OutputInterface $outout, $msgsock, string $command)
